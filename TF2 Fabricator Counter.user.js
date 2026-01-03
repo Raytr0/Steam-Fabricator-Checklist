@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        TF2 Fabricator Counter (Net Totals)
+// @name        TF2 Fabricator Counter (Initials Mode)
 // @namespace   https://github.com/Raytr0
-// @version     2.0
+// @version     2.2
 // @author      Raytr0
-// @description Net Total Calculation: Subtracts items you already have visible in your inventory from the total needed.
+// @description Overlays Initials (MF, TP, etc.) on items, keeps full names in Summary.
 // @match       *://steamcommunity.com/id/*/inventory*
 // @match       *://steamcommunity.com/profiles/*/inventory*
 // @match       *://steamcommunity.com/tradeoffer/*
@@ -13,7 +13,7 @@
 (function() {
     'use strict';
 
-    const ATTR_FINISHED = 'data-fab-v8-0';
+    const ATTR_FINISHED = 'data-fab-v10-0';
     const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
     // --- UI Creation (Summary Box) ---
@@ -37,42 +37,108 @@
 
     function getDisplaySettings(fullName) {
         let clean = fullName;
+        let initials = "";
         let color = '#ffcc00'; // Default Gold
 
-        // 1. Determine Color & Tier Label
-        if (clean.includes('Specialized Killstreak')) {
-            color = '#32CD32'; // Green
-            clean = clean.replace('Specialized Killstreak', 'Spec KS');
-        } else if (clean.includes('Killstreak')) {
-            if (clean.includes('Professional Killstreak')) {
-                color = '#FFD700';
-                clean = clean.replace('Professional Killstreak', 'Pro KS');
-            } else {
-                color = '#b0b0b0'; // Gray
-                clean = clean.replace('Killstreak', 'Basic KS');
-            }
-        }
-
-        // 2. Abbreviate Robot Parts
-        clean = clean.replace(/Battle-Worn(?: Robot)?/g, 'BR');
-        clean = clean.replace(/Reinforced(?: Robot)?/g, 'RI');
-        clean = clean.replace(/Pristine(?: Robot)?/g, 'PR');
-
-        // 3. Clean Fluff
+        // 1. Clean Fluff
         clean = clean
             .replace('Unique ', '')
             .replace('Item', '')
             .trim();
 
-        // 4. Specific Shortenings
-        clean = clean.replace('Money Furnace', 'Furnace');
-        clean = clean.replace('Taunt Processor', 'Processor');
-        clean = clean.replace('KB-808', 'KB');
+        // 2. Determine Color & Tier Label
+        if (clean.includes('Specialized Killstreak')) {
+            color = '#32CD32'; // Green
+            clean = clean.replace('Specialized Killstreak', 'Spec KS');
+            initials = 'Spec KS'; // Keep KS legible
+        } else if (clean.includes('Killstreak')) {
+            if (clean.includes('Professional Killstreak')) {
+                color = '#FFD700';
+                clean = clean.replace('Professional Killstreak', 'Pro KS');
+                initials = 'Pro KS';
+            } else {
+                color = '#b0b0b0'; // Gray
+                clean = clean.replace('Killstreak', 'Basic KS');
+                initials = 'Basic KS';
+            }
+        }
+        else {
+            // 3. Custom Colors & Initials for Robot Parts
+            if (fullName.includes('KB-808')) {
+                color = '#FF9900';
+                initials = 'KB';
+                clean = clean.replace('KB-808', 'KB');
+            }
+            else if (fullName.includes('Money Furnace')) {
+                color = '#7B9095';
+                initials = 'MF';
+                clean = clean.replace('Money Furnace', 'Furnace');
+            }
+            else if (fullName.includes('Taunt Processor')) {
+                color = '#0099FF';
+                initials = 'TP';
+                clean = clean.replace('Taunt Processor', 'Processor');
+            }
+            else if (fullName.includes('Emotion Detector')) {
+                color = '#55FF55';
+                initials = 'ED';
+                clean = clean.replace('Emotion Detector', 'Emotion');
+            }
+            else if (fullName.includes('Bomb Stabilizer')) {
+                color = '#FF4444';
+                initials = 'BS';
+                clean = clean.replace('Bomb Stabilizer', 'Bomb Stab.');
+            }
+            else if (fullName.includes('Humor Suppression')) {
+                color = '#E3E3C5';
+                initials = 'HS';
+                clean = clean.replace('Humor Suppression Pump', 'Humor Pump');
+            }
+            else if (fullName.includes('Currency Digester')) {
+                color = '#FF66AA';
+                initials = 'CD';
+                clean = clean.replace('Currency Digester', 'Digester');
+            }
+            else if (fullName.includes('Brainstorm Bulb')) {
+                color = '#f5dc98';
+                initials = 'BB';
+                clean = clean.replace('Brainstorm Bulb', 'Bulb');
+            }
+        }
 
-        // 5. Truncate
-        if (clean.length > 20) clean = clean.substring(0, 18) + '..';
+        // 4. Handle Prefixes (BR/RI/PR)
+        // We want the prefix in BOTH clean name and initials
+        // e.g. "Battle-Worn Robot Money Furnace" -> Clean: "BR Furnace", Initials: "BR MF"
 
-        return { text: clean, color: color };
+        const hasBR = /Battle-Worn(?: Robot)?/.test(fullName);
+        const hasRI = /Reinforced(?: Robot)?/.test(fullName);
+        const hasPR = /Pristine(?: Robot)?/.test(fullName);
+
+        let prefix = "";
+        if (hasBR) prefix = "BR";
+        else if (hasRI) prefix = "RI";
+        else if (hasPR) prefix = "PR";
+
+        // Apply prefix to our shortened text versions
+        if (prefix) {
+            // Clean up the original long prefix from 'clean'
+            clean = clean.replace(/Battle-Worn(?: Robot)?/g, '')
+                .replace(/Reinforced(?: Robot)?/g, '')
+                .replace(/Pristine(?: Robot)?/g, '')
+                .trim();
+
+            // Re-attach short prefix
+            clean = `${prefix} ${clean}`;
+            initials = `${prefix} ${initials}`;
+        }
+
+        // Final fallback if initials are empty (for weird items)
+        if (!initials) initials = clean.substring(0, 4);
+
+        // Truncate clean text for summary box
+        if (clean.length > 22) clean = clean.substring(0, 20) + '..';
+
+        return { text: clean, initials: initials, color: color };
     }
 
     function getIngredients(descriptionArray) {
@@ -122,19 +188,17 @@
     function scanItems() {
         const allItems = document.querySelectorAll('.item');
 
-        let globalNeeded = {}; // What the Fabricators require
-        let globalOwned = {};  // What "Loose" items we have in inventory
+        let globalNeeded = {};
+        let globalOwned = {};
         let fabricatorFound = false;
 
         allItems.forEach(item => {
             let data = null;
-
-            // Try to use cached data or fetch it
             if (item.fabCachedData) {
                 data = item.fabCachedData;
             } else {
                 data = getItemData(item);
-                if (data) item.fabCachedData = data; // Cache lookup
+                if (data) item.fabCachedData = data;
             }
 
             if (!data) return;
@@ -144,40 +208,25 @@
 
             if (isFabricator) {
                 fabricatorFound = true;
-
-                // --- PROCESS FABRICATOR REQUIREMENTS ---
                 let ingredients = item.fabCachedIngredients;
                 if (!ingredients) {
                     ingredients = getIngredients(data.descriptions);
                     item.fabCachedIngredients = ingredients;
                 }
 
-                // Add to Global Needed Count
                 ingredients.forEach(ing => {
                     if (!globalNeeded[ing.name]) globalNeeded[ing.name] = 0;
                     globalNeeded[ing.name] += ing.count;
                 });
 
-                // --- RENDER OVERLAY (If new) ---
                 if (!item.getAttribute(ATTR_FINISHED)) {
                     renderOverlay(item, ingredients);
                     item.setAttribute(ATTR_FINISHED, 'true');
                 }
 
             } else {
-                // --- PROCESS OWNED ITEMS ---
-                // If this is NOT a fabricator, it might be a part we own.
-                // We tally it up using the EXACT market hash name.
-                // Note: TF2 Inventory usually doesn't stack items in one slot,
-                // so each element is usually Count: 1.
-                // However, we check `amount` just in case (e.g. currency).
-
                 let count = 1;
-                if (data.amount) count = parseInt(data.amount); // Handle stacks if any
-
-                // Use the raw name to match the recipe name
-                // Recipe: "Battle-Worn Robot KB-808"
-                // Item Name: "Battle-Worn Robot KB-808"
+                if (data.amount) count = parseInt(data.amount);
                 if (!globalOwned[rawName]) globalOwned[rawName] = 0;
                 globalOwned[rawName] += count;
             }
@@ -200,7 +249,8 @@
         ingredients.forEach(ing => {
             const settings = getDisplaySettings(ing.name);
             const line = document.createElement('div');
-            line.innerText = `${ing.count} x ${settings.text}`;
+            // USE INITIALS HERE
+            line.innerText = `${ing.count} x ${settings.initials}`;
             line.style.color = settings.color;
             line.style.fontSize = '10px';
             line.style.fontWeight = 'bold';
@@ -225,23 +275,22 @@
 
         names.forEach(name => {
             const neededCount = needed[name];
-            const ownedCount = owned[name] || 0; // Check our owned stash
-
+            const ownedCount = owned[name] || 0;
             const netNeeded = neededCount - ownedCount;
 
-            // Only show if we still need more
             if (netNeeded > 0) {
                 const settings = getDisplaySettings(name);
                 htmlRows += `
                     <div style="display: flex; justify-content: space-between; gap: 10px; font-size: 11px; line-height: 14px;">
-                        <span style="color: ${settings.color}; text-shadow: 1px 1px 0 #000;">${settings.text}</span>
+                        <span style="color: ${settings.color}; text-shadow: 1px 1px 0 #000;">
+                            ${settings.text}
+                        </span>
                         <span style="color: #fff; font-weight: bold;">${netNeeded}</span>
                     </div>
                 `;
             }
         });
 
-        // If we have everything needed for all visible fabs
         if (htmlRows === '') {
             summaryBox.style.display = 'none';
             return;
