@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        TF2 Fabricator Counter (API Version)
+// @name        TF2 Fabricator Counter (Dynamic API)
 // @namespace   https://github.com/Raytr0
-// @version     3.0
+// @version     3.1
 // @author      Raytr0
-// @description Uses the Steam API to calculate totals for the ENTIRE inventory instantly.
+// @description Automatically fetches the Steam API for the specific user you are currently viewing.
 // @match       *://steamcommunity.com/id/*/inventory*
 // @match       *://steamcommunity.com/profiles/*/inventory*
 // @match       *://steamcommunity.com/tradeoffer/*
@@ -26,13 +26,14 @@
     summaryBox.style.zIndex = '99999';
     summaryBox.style.fontFamily = 'Arial, sans-serif';
     summaryBox.style.minWidth = '160px';
-    summaryBox.innerHTML = '<div style="color:#aaa; font-size:10px;">Loading API...</div>';
+    summaryBox.style.pointerEvents = 'none'; // Click-through
+    summaryBox.innerHTML = '<div style="color:#aaa; font-size:10px;">Waiting...</div>';
     document.body.appendChild(summaryBox);
 
     // --- State ---
-    let INVENTORY_DATA = {}; // Maps AssetID -> { ingredients: [], isFab: bool }
-    let OWNED_PARTS = {};    // Maps PartName -> Count
-    let NEEDED_PARTS = {};   // Maps PartName -> Count
+    let INVENTORY_DATA = {};
+    let OWNED_PARTS = {};
+    let NEEDED_PARTS = {};
 
     // --- Helper: Settings ---
     function getDisplaySettings(fullName) {
@@ -71,7 +72,6 @@
         return { text: clean, initials: initials, color: color };
     }
 
-    // --- Helper: Parsing ---
     function parseIngredients(descriptionArray) {
         if (!descriptionArray) return [];
         let ingredients = [];
@@ -90,47 +90,52 @@
         return ingredients;
     }
 
-    // --- CORE: Fetch Inventory API ---
+    // --- CORE: Dynamic API Fetch ---
     async function loadInventory() {
-        // 1. Get Steam ID from URL
-        const url = window.location.href;
-        let inventoryUrl = "";
+        const path = window.location.pathname; // e.g., "/id/Raytr0/inventory"
+        let endpoint = "";
 
-        // Handle: steamcommunity.com/id/CUSTOM_URL/inventory
-        // Handle: steamcommunity.com/profiles/76561198xxxx/inventory
-        if (url.includes('/inventory')) {
-            let baseUrl = url.split('/inventory')[0];
-            inventoryUrl = `${baseUrl}/inventory/json/440/2?l=english&count=5000`; // JSON endpoint
-        } else if (url.includes('tradeoffer')) {
-            // Trade offers are harder because we need the partner's ID or our ID.
-            // For now, this API logic is primarily for the INVENTORY page.
-            // We'll fallback to DOM scanning for Trade Offers if needed, or extract ID from page variables.
-            // Let's focus on the Inventory Page fix first.
+        // 1. Detect User Identity from URL
+        // Match: /id/CustomName  OR  /profiles/76561198...
+        const matchId = path.match(/^\/id\/([^/]+)/);
+        const matchProfile = path.match(/^\/profiles\/([^/]+)/);
+
+        if (matchId) {
+            // It's a Custom URL
+            endpoint = `/id/${matchId[1]}/inventory/json/440/2?l=english&count=5000`;
+        } else if (matchProfile) {
+            // It's a Profile ID
+            endpoint = `/profiles/${matchProfile[1]}/inventory/json/440/2?l=english&count=5000`;
+        } else if (window.location.href.includes('tradeoffer')) {
+            // Trade offers are complex (require session/partner ID).
+            // This API script focuses on Inventory Pages.
+            summaryBox.innerHTML = '<div style="color:#aaa;">Trade Mode (No API)</div>';
+            return;
+        } else {
+            summaryBox.innerHTML = '<div style="color:red;">Unknown User</div>';
             return;
         }
 
-        console.log(`[TF2-Fab] Fetching: ${inventoryUrl}`);
+        summaryBox.innerHTML = '<div style="color:#aaa; font-size:10px;">Fetching Inventory...</div>';
 
         try {
-            const response = await fetch(inventoryUrl);
+            const response = await fetch(endpoint);
             const json = await response.json();
 
             if (!json.success) {
-                summaryBox.innerHTML = '<div style="color:red">API Error</div>';
+                summaryBox.innerHTML = '<div style="color:red">Hidden/Empty</div>';
                 return;
             }
 
             // 2. Process Data
-            const descriptions = {}; // ClassID_InstanceID -> Description Object
+            const descriptions = {};
 
-            // Map descriptions for easy lookup
             if (json.rgDescriptions) {
                 for (let key in json.rgDescriptions) {
                     descriptions[key] = json.rgDescriptions[key];
                 }
             }
 
-            // Process Assets (The actual items)
             if (json.rgInventory) {
                 for (let key in json.rgInventory) {
                     let item = json.rgInventory[key];
@@ -142,21 +147,16 @@
                     let rawName = desc.market_hash_name || "";
 
                     if (rawName.includes('Fabricator')) {
-                        // It's a Fabricator
                         let ingredients = parseIngredients(desc.descriptions);
 
-                        // Store for Overlay
                         INVENTORY_DATA[item.id] = { ingredients: ingredients, isFab: true };
 
-                        // Add to Totals
                         ingredients.forEach(ing => {
                             if (!NEEDED_PARTS[ing.name]) NEEDED_PARTS[ing.name] = 0;
                             NEEDED_PARTS[ing.name] += ing.count;
                         });
                     } else {
-                        // It's a Part (or something else)
-                        // Add to Owned Totals
-                        // Note: rgInventory items are single instances usually.
+                        // Count Owned Parts (Exact Match)
                         if (!OWNED_PARTS[rawName]) OWNED_PARTS[rawName] = 0;
                         OWNED_PARTS[rawName] += 1;
                     }
@@ -164,7 +164,7 @@
             }
 
             updateSummaryBox();
-            scanDomForOverlays(); // Apply to currently visible items
+            scanDomForOverlays();
 
         } catch (e) {
             console.error(e);
@@ -172,7 +172,6 @@
         }
     }
 
-    // --- UI: Update Summary ---
     function updateSummaryBox() {
         let html = '<div style="color: #fff; font-weight: bold; border-bottom: 1px solid #555; margin-bottom: 5px; padding-bottom: 2px;">MISSING PARTS</div>';
         let hasMissing = false;
@@ -195,34 +194,24 @@
             }
         }
 
-        if (!hasMissing) html += '<div style="color:#888; font-size:10px;">None!</div>';
+        if (!hasMissing) html += '<div style="color:#888; font-size:10px;">Complete!</div>';
         summaryBox.innerHTML = html;
         summaryBox.style.display = 'block';
     }
 
-    // --- UI: Dom Scanner ---
     function scanDomForOverlays() {
-        // Find all visible item elements
         const elements = document.querySelectorAll('.item');
-
         elements.forEach(el => {
-            // If already processed, skip
             if (el.getAttribute('data-fab-done')) return;
-
-            // Extract Asset ID from Element ID
-            // Format: "440_2_123456" OR "item440_2_123456"
             if (!el.id) return;
 
             let parts = el.id.split('_');
-            // Remove "item" prefix if present in the first part
             if (parts[0].startsWith('item')) parts[0] = parts[0].replace('item', '');
 
             if (parts.length < 3) return;
             let assetId = parts[2];
 
-            // Look up in our API Data
             let data = INVENTORY_DATA[assetId];
-
             if (data && data.isFab) {
                 renderOverlay(el, data.ingredients);
                 el.setAttribute('data-fab-done', 'true');
@@ -231,7 +220,6 @@
     }
 
     function renderOverlay(item, ingredients) {
-        // Prevent dupes
         if (item.querySelector('.fab-overlay')) return;
 
         const container = document.createElement('div');
@@ -262,11 +250,9 @@
         item.appendChild(container);
     }
 
-    // --- Initialization ---
-    // 1. Run immediately
+    // --- Init ---
     loadInventory();
 
-    // 2. Watch for DOM changes (scrolling loads new divs)
     const observer = new MutationObserver((mutations) => {
         scanDomForOverlays();
     });
