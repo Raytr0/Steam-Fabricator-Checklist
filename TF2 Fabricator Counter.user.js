@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        TF2 Fabricator Counter (v27 - Clean Split)
+// @name        TF2 Fabricator Counter (v3.3 - KS Abbreviations)
 // @namespace   https://github.com/Raytr0
-// @version     3.2
+// @version     3.3
 // @author      Raytr0
-// @description Trade Window runs v2.2 logic (DOM). Inventory Window runs API logic. Zero interference.
+// @description Trade Window runs v2.2 logic (DOM). Inventory Window runs API logic. Overlay is Top-Left. Displays Sheen (AE, DD) and KS (CD, FH) codes.
 // @match       *://steamcommunity.com/id/*/inventory*
 // @match       *://steamcommunity.com/profiles/*/inventory*
 // @match       *://steamcommunity.com/tradeoffer/*
@@ -16,7 +16,62 @@
     const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
     const isTradePage = window.location.href.includes('tradeoffer');
 
-    // --- SHARED UI ---
+    // =========================================================================
+    // DATA: Sheen Codes & Colors
+    // =========================================================================
+    const SHEEN_DATA = {
+        'Agonizing Emerald': { code: 'AE', color: '#28FF46' },
+        'Deadly Daffodil':   { code: 'DD', color: '#F2AC0A' },
+        'Hot Rod':           { code: 'HR', color: '#FF1EFF' },
+        'Manndarin':         { code: 'MA', color: '#FF4B05' },
+        'Mean Green':        { code: 'MG', color: '#64FF0A' },
+        'Team Shine':        { code: 'TS', color: '#FF7676' },
+        'Villainous Violet': { code: 'VV', color: '#6914FF' }
+    };
+
+    // =========================================================================
+    // DATA: Killstreaker Codes
+    // =========================================================================
+    const KILLSTREAKER_DATA = {
+        'Cerebral Discharge': 'CD',
+        'Fire Horns':         'FH',
+        'Flames':             'FLA',
+        'Hypno-Beam':         'HB',
+        'Incinerator':        'INC',
+        'Singularity':        'SIN',
+        'Tornado':            'TOR'
+    };
+
+    // =========================================================================
+    // CSS STYLES: Top-Left Positioning
+    // =========================================================================
+    const style = document.createElement('style');
+    style.innerHTML = `
+        .fab-overlay {
+            position: absolute;
+            top: 2px;
+            left: 3px;
+            text-align: left;
+            pointer-events: none;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+        }
+        .fab-row {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            margin-bottom: 1px;
+            font-size: 10px;
+            line-height: 10px;
+            font-family: Arial, sans-serif;
+            font-weight: bold;
+            text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 2px 2px 0px #000;
+        }
+    `;
+    document.head.appendChild(style);
+
+    // --- SHARED UI (Summary Box) ---
     const summaryBox = document.createElement('div');
     summaryBox.id = 'fab_total_summary';
     summaryBox.style.position = 'fixed';
@@ -34,7 +89,16 @@
     document.body.appendChild(summaryBox);
 
     // =========================================================================
-    // HELPER: Display Settings (Colors & Initials) - Shared for Consistency
+    // HELPER: Strip HTML
+    // =========================================================================
+    function stripHtml(html) {
+        let tmp = document.createElement("DIV");
+        tmp.innerHTML = html;
+        return tmp.textContent || tmp.innerText || "";
+    }
+
+    // =========================================================================
+    // HELPER: Display Settings (Ingredients)
     // =========================================================================
     function getDisplaySettings(fullName) {
         let clean = fullName.replace('Unique ', '').replace('Item', '').trim();
@@ -73,55 +137,110 @@
     }
 
     // =========================================================================
-    // MODE 1: TRADE OFFER (The exact code from v2.2 logic)
+    // HELPER: Create DOM Row
+    // =========================================================================
+    function createRow(text, color) {
+        const row = document.createElement('div');
+        row.className = 'fab-row';
+
+        const span = document.createElement('span');
+        span.innerText = text;
+        span.style.color = color;
+        row.appendChild(span);
+        return row;
+    }
+
+    // =========================================================================
+    // HELPER: Unified Parser
+    // =========================================================================
+    function parseItemDetails(descriptionArray) {
+        let result = {
+            ingredients: [],
+            sheenCode: null,
+            sheenColor: '#fff',
+            ksCode: null
+        };
+
+        if (!descriptionArray) return result;
+
+        for (let lineObj of descriptionArray) {
+            let rawVal = lineObj.value || "";
+            let text = stripHtml(rawVal).trim();
+            if (!text || text.includes("must be fulfilled")) continue;
+
+            // 1. Ingredients
+            let matchX = text.match(/(.*?) x (\d+)/);
+            let matchProgress = text.match(/\((\d+)\/(\d+)\)\s*(.*)/);
+
+            if (matchX && !text.includes("Inputs:")) {
+                result.ingredients.push({ name: matchX[1].trim(), count: parseInt(matchX[2]) });
+            } else if (matchProgress) {
+                let current = parseInt(matchProgress[1]);
+                let max = parseInt(matchProgress[2]);
+                if (current < max) result.ingredients.push({ name: matchProgress[3].trim(), count: max - current });
+            }
+
+            // 2. Sheen Detection
+            if (text.includes('Sheen:')) {
+                let parts = text.split('Sheen:');
+                if (parts.length > 1) {
+                    let sheenName = parts[1].trim();
+                    for (let key in SHEEN_DATA) {
+                        if (sheenName.includes(key)) {
+                            result.sheenCode = SHEEN_DATA[key].code;
+                            result.sheenColor = SHEEN_DATA[key].color;
+                            break;
+                        }
+                    }
+                    if (!result.sheenCode) result.sheenCode = "??";
+                }
+            }
+
+            // 3. Killstreaker Detection
+            if (text.includes('Killstreaker:')) {
+                let parts = text.split('Killstreaker:');
+                if (parts.length > 1) {
+                    let ksName = parts[1].trim();
+                    for (let key in KILLSTREAKER_DATA) {
+                        if (ksName.includes(key)) {
+                            result.ksCode = KILLSTREAKER_DATA[key];
+                            break;
+                        }
+                    }
+                    // If no abbreviation found, fallback to first 3 chars
+                    if (!result.ksCode) result.ksCode = ksName.substring(0,3).toUpperCase();
+                }
+            }
+        }
+        return result;
+    }
+
+    // =========================================================================
+    // MODE 1: TRADE OFFER
     // =========================================================================
     if (isTradePage) {
         console.log("[TF2-Fab] Trade Mode Activated");
         summaryBox.style.display = 'block';
         summaryBox.innerHTML = '<div style="color:#aaa;">Scanning Trade...</div>';
 
-        // Helper: Parse Ingredients (DOM Version)
-        const getIngredients = (descriptionArray) => {
-            if (!descriptionArray) return [];
-            let ingredients = [];
-            for (let lineObj of descriptionArray) {
-                let text = lineObj.value ? String(lineObj.value).trim() : "";
-                if (!text || text.includes("must be fulfilled") || text === "Inputs:") continue;
-                let matchX = text.match(/(.*?) x (\d+)/);
-                let matchProgress = text.match(/\((\d+)\/(\d+)\)\s*(.*)/);
-                if (matchX) ingredients.push({ name: matchX[1].trim(), count: parseInt(matchX[2]) });
-                else if (matchProgress) {
-                    let current = parseInt(matchProgress[1]);
-                    let max = parseInt(matchProgress[2]);
-                    if (current < max) ingredients.push({ name: matchProgress[3].trim(), count: max - current });
-                }
-            }
-            return ingredients;
-        };
-
-        const renderTradeOverlay = (item, ingredients) => {
+        const renderTradeOverlay = (item, details) => {
             const container = document.createElement('div');
-            container.style.position = 'absolute';
-            container.style.top = '1px';
-            container.style.right = '2px';
-            container.style.textAlign = 'right';
-            container.style.pointerEvents = 'none';
-            container.style.zIndex = '10';
-            container.style.display = 'flex';
-            container.style.flexDirection = 'column';
+            container.className = 'fab-overlay';
 
-            ingredients.forEach(ing => {
+            // Render Sheen Code
+            if (details.sheenCode) {
+                container.appendChild(createRow(details.sheenCode, details.sheenColor));
+            }
+            // Render Killstreaker Code
+            if (details.ksCode) {
+                // Use white text for KS to keep it clean, or could use sheenColor
+                container.appendChild(createRow(`KS: ${details.ksCode}`, '#ccc'));
+            }
+
+            // Render Ingredients
+            details.ingredients.forEach(ing => {
                 const settings = getDisplaySettings(ing.name);
-                const line = document.createElement('div');
-                line.innerText = `${ing.count} x ${settings.initials}`;
-                line.style.color = settings.color;
-                line.style.fontSize = '10px';
-                line.style.fontWeight = 'bold';
-                line.style.fontFamily = 'Arial, sans-serif';
-                line.style.textShadow = '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 2px 2px 0px #000';
-                line.style.lineHeight = '10px';
-                line.style.marginBottom = '1px';
-                container.appendChild(line);
+                container.appendChild(createRow(`${ing.count} x ${settings.initials}`, settings.color));
             });
             item.appendChild(container);
         };
@@ -133,40 +252,34 @@
             let fabricatorFound = false;
 
             allItems.forEach(item => {
-                // In trade mode, we rely on 'rgItem' being attached to the element
                 let data = item.rgItem;
                 if (!data) return;
 
                 const rawName = data.market_hash_name || "";
 
-                if (rawName.includes('Fabricator')) {
+                if (rawName.includes('Fabricator') || rawName.includes('Kit')) {
                     fabricatorFound = true;
-                    // Cache parsing
-                    let ingredients = item.fabCachedIngredients;
-                    if (!ingredients) {
-                        ingredients = getIngredients(data.descriptions);
-                        item.fabCachedIngredients = ingredients;
+                    if (!item.getAttribute('data-fab-trade-done')) {
+                        let details = parseItemDetails(data.descriptions);
+                        item.fabCachedIngredients = details.ingredients;
+                        renderTradeOverlay(item, details);
+                        item.setAttribute('data-fab-trade-done', 'true');
                     }
 
-                    ingredients.forEach(ing => {
-                        if (!globalNeeded[ing.name]) globalNeeded[ing.name] = 0;
-                        globalNeeded[ing.name] += ing.count;
-                    });
-
-                    if (!item.getAttribute('data-fab-trade-done')) {
-                        renderTradeOverlay(item, ingredients);
-                        item.setAttribute('data-fab-trade-done', 'true');
+                    if (item.fabCachedIngredients) {
+                        item.fabCachedIngredients.forEach(ing => {
+                            if (!globalNeeded[ing.name]) globalNeeded[ing.name] = 0;
+                            globalNeeded[ing.name] += ing.count;
+                        });
                     }
                 } else {
                     let count = 1;
-                    // Trade/Inv items usually 1, but check amount just in case
                     if (data.amount) count = parseInt(data.amount);
                     if (!globalOwned[rawName]) globalOwned[rawName] = 0;
                     globalOwned[rawName] += count;
                 }
             });
 
-            // Update Summary
             if (!fabricatorFound) {
                 summaryBox.style.display = 'none';
                 return;
@@ -193,7 +306,7 @@
             });
 
             if (missingCount === 0) {
-                summaryBox.style.display = 'none'; // Hide if complete
+                summaryBox.style.display = 'none';
             } else {
                 summaryBox.style.display = 'block';
                 summaryBox.innerHTML = '<div style="color: #fff; font-weight: bold; border-bottom: 1px solid #555; margin-bottom: 5px; padding-bottom: 2px;">MISSING PARTS</div>' + htmlRows;
@@ -215,49 +328,24 @@
         let OWNED_PARTS = {};
         let NEEDED_PARTS = {};
 
-        const parseApiIngredients = (descriptionArray) => {
-            if (!descriptionArray) return [];
-            let ingredients = [];
-            for (let line of descriptionArray) {
-                let text = line.value ? String(line.value).trim() : "";
-                if (!text || text.includes("must be fulfilled") || text === "Inputs:") continue;
-                let matchX = text.match(/(.*?) x (\d+)/);
-                let matchProgress = text.match(/\((\d+)\/(\d+)\)\s*(.*)/);
-                if (matchX) ingredients.push({ name: matchX[1].trim(), count: parseInt(matchX[2]) });
-                else if (matchProgress) {
-                    let current = parseInt(matchProgress[1]);
-                    let max = parseInt(matchProgress[2]);
-                    if (current < max) ingredients.push({ name: matchProgress[3].trim(), count: max - current });
-                }
-            }
-            return ingredients;
-        };
-
-        const renderInvOverlay = (item, ingredients) => {
+        const renderInvOverlay = (item, details) => {
             if (item.querySelector('.fab-overlay')) return;
             const container = document.createElement('div');
             container.className = 'fab-overlay';
-            container.style.position = 'absolute';
-            container.style.top = '1px';
-            container.style.right = '2px';
-            container.style.textAlign = 'right';
-            container.style.pointerEvents = 'none';
-            container.style.zIndex = '10';
-            container.style.display = 'flex';
-            container.style.flexDirection = 'column';
 
-            ingredients.forEach(ing => {
+            // Render Sheen Code
+            if (details.sheenCode) {
+                container.appendChild(createRow(details.sheenCode, details.sheenColor));
+            }
+            // Render Killstreaker Code
+            if (details.ksCode) {
+                container.appendChild(createRow(`KS: ${details.ksCode}`, '#ccc'));
+            }
+
+            // Render Ingredients
+            details.ingredients.forEach(ing => {
                 const settings = getDisplaySettings(ing.name);
-                const line = document.createElement('div');
-                line.innerText = `${ing.count} x ${settings.initials}`;
-                line.style.color = settings.color;
-                line.style.fontSize = '10px';
-                line.style.fontWeight = 'bold';
-                line.style.fontFamily = 'Arial, sans-serif';
-                line.style.textShadow = '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 2px 2px 0px #000';
-                line.style.lineHeight = '10px';
-                line.style.marginBottom = '1px';
-                container.appendChild(line);
+                container.appendChild(createRow(`${ing.count} x ${settings.initials}`, settings.color));
             });
             item.appendChild(container);
         };
@@ -299,25 +387,21 @@
                     return;
                 }
 
-                // Dual Format Fix: Check 'assets' OR 'rgInventory'
                 const rawItems = json.assets || json.rgInventory;
                 if (!rawItems) {
                     summaryBox.innerHTML = '<div style="color:yellow">Empty</div>';
                     return;
                 }
 
-                // Dual Format Fix: Check 'descriptions' OR 'rgDescriptions'
                 const rawDescs = json.descriptions || json.rgDescriptions || [];
                 const descMap = {};
 
-                // Map descriptions
                 if (Array.isArray(rawDescs)) {
                     rawDescs.forEach(d => { descMap[d.classid + '_' + d.instanceid] = d; });
                 } else {
                     Object.assign(descMap, rawDescs);
                 }
 
-                // Convert items to Array
                 const items = Array.isArray(rawItems) ? rawItems : Object.values(rawItems);
 
                 items.forEach(item => {
@@ -327,12 +411,11 @@
 
                     let rawName = desc.market_hash_name || "";
 
-                    if (rawName.includes('Fabricator')) {
-                        let ingredients = parseApiIngredients(desc.descriptions);
-                        // Store BOTH id and assetid
-                        INVENTORY_DATA[item.id || item.assetid] = { ingredients: ingredients };
+                    if (rawName.includes('Fabricator') || rawName.includes('Kit')) {
+                        let details = parseItemDetails(desc.descriptions);
+                        INVENTORY_DATA[item.id || item.assetid] = details;
 
-                        ingredients.forEach(ing => {
+                        details.ingredients.forEach(ing => {
                             if (!NEEDED_PARTS[ing.name]) NEEDED_PARTS[ing.name] = 0;
                             NEEDED_PARTS[ing.name] += ing.count;
                         });
@@ -344,7 +427,6 @@
 
                 updateInvSummary();
 
-                // Start observer for overlays
                 const observer = new MutationObserver(() => {
                     const elements = document.querySelectorAll('.item');
                     elements.forEach(el => {
@@ -356,9 +438,9 @@
                         if (parts.length < 3) return;
                         let assetId = parts[2];
 
-                        let data = INVENTORY_DATA[assetId];
-                        if (data) {
-                            renderInvOverlay(el, data.ingredients);
+                        let details = INVENTORY_DATA[assetId];
+                        if (details) {
+                            renderInvOverlay(el, details);
                             el.setAttribute('data-fab-inv-done', 'true');
                         }
                     });
