@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name        TF2 Fabricator Counter (v3.8 - Auto-Update)
+// @name        TF2 Fabricator Counter
 // @namespace   https://github.com/Raytr0
 // @version     3.4.1
 // @author      Raytr0
