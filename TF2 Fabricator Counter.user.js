@@ -1,12 +1,14 @@
 // ==UserScript==
-// @name        TF2 Fabricator Counter
+// @name        TF2 Fabricator Counter (v3.8 - Auto-Update)
 // @namespace   https://github.com/Raytr0
-// @version     3.4
+// @version     3.4.1
 // @author      Raytr0
-// @description Added settings menu, sheen and killstreaker codes, improved inventory parsing.
+// @description Added auto update
 // @match       *://steamcommunity.com/id/*/inventory*
 // @match       *://steamcommunity.com/profiles/*/inventory*
 // @match       *://steamcommunity.com/tradeoffer/*
+// @updateURL   https://github.com/Raytr0/Steam-Fabricator-Checklist/raw/refs/heads/main/TF2%20Fabricator%20Counter.user.js
+// @downloadURL https://github.com/Raytr0/Steam-Fabricator-Checklist/raw/refs/heads/main/TF2%20Fabricator%20Counter.user.js
 // @grant       unsafeWindow
 // ==/UserScript==
 
