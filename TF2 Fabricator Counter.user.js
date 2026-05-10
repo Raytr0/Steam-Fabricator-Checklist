@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name        TF2 Fabricator Counter
 // @namespace   https://github.com/Raytr0
-// @version     4.0.1
+// @version     5.0
 // @author      Raytr0
-// @description Fixed "Initializing" bug when toggling the missing parts box.
+// @description Adds missing parts overlays to TF2 Fabricators and Kits across Steam, including market active listings
 // @match       *://steamcommunity.com/id/*/inventory*
 // @match       *://steamcommunity.com/profiles/*/inventory*
 // @match       *://steamcommunity.com/tradeoffer/*
+// @match       *://steamcommunity.com/id/*/tradeoffers*
+// @match       *://steamcommunity.com/profiles/*/tradeoffers*
 // @match       *://steamcommunity.com/market/listings/440/*
 // @match       *://steamcommunity.com/market/search*
+// @match       *://steamcommunity.com/market/*
 // @updateURL   https://github.com/Raytr0/Steam-Fabricator-Checklist/raw/refs/heads/main/TF2%20Fabricator%20Counter.user.js
 // @downloadURL https://github.com/Raytr0/Steam-Fabricator-Checklist/raw/refs/heads/main/TF2%20Fabricator%20Counter.user.js
 // @grant       unsafeWindow
@@ -18,12 +21,16 @@
     'use strict';
 
     const win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-    const isTradePage = window.location.href.includes('tradeoffer');
+    const isTradeOfferPage = window.location.href.includes('/tradeoffer/');
+    const isTradeOffersList = window.location.href.includes('/tradeoffers');
+    const isTradePage = isTradeOfferPage || isTradeOffersList;
     const isMarketPage = window.location.href.includes('market');
+    const isInventoryPage = window.location.href.includes('inventory');
 
     // Global trackers to prevent "Initializing" hang
     let INVENTORY_DATA = {}, OWNED_PARTS = {}, NEEDED_PARTS = {};
     let GLOBAL_TRADE_NEEDED = {}, GLOBAL_TRADE_OWNED = {};
+    let ITEM_CACHE = {};
 
     // =========================================================================
     // PERSISTENCE & SETTINGS
@@ -42,16 +49,16 @@
 
         // Clear overlays for re-render
         document.querySelectorAll('.fab-overlay').forEach(el => el.remove());
-        document.querySelectorAll('.item').forEach(el => {
+        document.querySelectorAll('.item, .trade_item').forEach(el => {
             el.removeAttribute('data-fab-trade-done');
             el.removeAttribute('data-fab-inv-done');
         });
         document.querySelectorAll('.market_listing_row').forEach(el => el.removeAttribute('data-fab-market-done'));
 
         // Immediately refresh the text so it doesn't stay "Initializing"
-        if (isTradePage) {
+        if (isTradePage && !isTradeOffersList) {
             updateTradeSummaryUI();
-        } else if (!isMarketPage) {
+        } else if (!isMarketPage && !isTradePage) {
             updateInvSummaryUI();
         }
 
@@ -81,6 +88,7 @@
     // =========================================================================
     const style = document.createElement('style');
     style.innerHTML = `
+        .item, .trade_item, .market_listing_item_img_container { position: relative; }
         .fab-overlay { position: absolute; top: 2px; left: 3px; text-align: left; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
         .fab-row { display: flex; align-items: center; justify-content: flex-start; margin-bottom: 1px; font-size: 10px; line-height: 10px; font-family: Arial, sans-serif; font-weight: bold; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 2px 2px 0px #000; }
         #fab_main_container {
@@ -137,9 +145,15 @@
     // CORE FUNCTIONS (v3.3)
     // =========================================================================
     function stripHtml(html) {
-        let tmp = document.createElement("DIV");
-        tmp.innerHTML = html;
-        return tmp.textContent || tmp.innerText || "";
+        return html.replace(/<[^>]*>?/gm, '');
+    }
+
+    function debounce(func, wait) {
+        let timeout;
+        return function (...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(this, args), wait);
+        };
     }
 
     function getDisplaySettings(fullName) {
@@ -262,42 +276,214 @@
     // =========================================================================
     if (isMarketPage) {
         const scanMarket = () => {
-            const listings = document.querySelectorAll('.market_listing_row');
+            // Only query listings we haven't processed yet
+            const listings = document.querySelectorAll('.market_listing_row:not([data-fab-market-done])');
+            if (listings.length === 0) return;
+            
+            // On market pages, items can be defined in multiple ways.
+            // First we check g_rgAssets which handles search and standard market listing pages
             const assets = win.g_rgAssets;
-            if (!assets || !assets[440] || !assets[440][2]) return;
+            let myActiveListings = null;
+
+            // In the "My Active Listings" area, the assets are stored inside g_rgDescriptions
+            // keyed by classid_instanceid
+            if (win.g_rgDescriptions) {
+                 myActiveListings = win.g_rgDescriptions;
+            }
+            
+            if (!assets && !myActiveListings) return;
+            
             listings.forEach(row => {
-                if (row.getAttribute('data-fab-market-done')) return;
-                const buyBtn = row.querySelector('.item_market_action_button'); if (!buyBtn) return;
-                const match = buyBtn.href.match(/'(\d+)',\s*440,\s*'2',\s*'(\d+)'/); if (!match) return;
-                const assetId = match[2]; const itemData = assets[440][2][assetId];
+                row.setAttribute('data-fab-market-done', 'true');
+                
+                let itemData = null;
+                
+                // Try standard market search result Buy button
+                const buyBtn = row.querySelector('.item_market_action_button'); 
+                if (buyBtn && buyBtn.href) {
+                    const match = buyBtn.href.match(/'(\d+)',\s*440,\s*'2',\s*'(\d+)'/); 
+                    if (match && assets && assets[440] && assets[440][2]) {
+                        const assetId = match[2]; 
+                        itemData = assets[440][2][assetId];
+                    }
+                }
+
+                // If that fails, check if it's a "My Active Listings" row by looking at the Edit/Remove button
+                if (!itemData) {
+                    const editBtn = row.querySelector('a.item_market_action_button_edit');
+                    if (editBtn && editBtn.href) {
+                        // javascript:RemoveMarketListing('mylisting', '497228278933929965', 440, '2', '17016865696')
+                        // The last parameter is the assetID. However, active market listings store their data 
+                        // in g_rgDescriptions, and the ID format is slightly convoluted. 
+                        
+                        // We can also extract the item details from the hover element ID if it exists
+                        const itemNameEl = row.querySelector('.market_listing_item_name');
+                        if (itemNameEl && itemNameEl.id) {
+                            // Find the script block containing the item data 
+                            // e.g. CreateItemHoverFromContainer( g_rgDescriptions, 'mylisting_497228278933929965_name', 440, '2', '248749733', '92561083' );
+                            const scripts = document.querySelectorAll('script');
+                            for (let script of scripts) {
+                                if (script.textContent.includes(itemNameEl.id)) {
+                                    const match = script.textContent.match(new RegExp(`'${itemNameEl.id}',\\s*\\d+,\\s*'\\d+',\\s*'(\\d+)',\\s*'(\\d+)'`));
+                                    if (match && myActiveListings) {
+                                        const classId = match[1];
+                                        const instanceId = match[2];
+                                        itemData = myActiveListings[`${classId}_${instanceId}`];
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If it's a generic market listing without a buy button (e.g. user inventory on market)
+                if (!itemData) {
+                    const img = row.querySelector('img.market_listing_item_img');
+                    if (img && img.id) {
+                         const scripts = document.querySelectorAll('script');
+                            for (let script of scripts) {
+                                if (script.textContent.includes(img.id)) {
+                                    const match = script.textContent.match(new RegExp(`'${img.id}',\\s*\\d+,\\s*'\\d+',\\s*'(\\d+)',\\s*'(\\d+)'`));
+                                    if (match && myActiveListings) {
+                                        const classId = match[1];
+                                        const instanceId = match[2];
+                                        itemData = myActiveListings[`${classId}_${instanceId}`];
+                                        break;
+                                    }
+                                }
+                            }
+                    }
+                }
+
                 if (itemData && itemData.descriptions) {
                     const details = parseItemDetails(itemData.descriptions);
-                    const imgContainer = row.querySelector('.market_listing_item_img_container');
-                    if (imgContainer) { renderFabOverlay(imgContainer, details, true); row.setAttribute('data-fab-market-done', 'true'); }
+                    
+                    // Prioritize putting the overlay on the image container
+                    let imgContainer = row.querySelector('.market_listing_item_img_container');
+                    
+                    // If no explicit image container, just attach it to the row but style it so it sits over the image
+                    if (!imgContainer) {
+                        const img = row.querySelector('img.market_listing_item_img');
+                        if (img) {
+                             imgContainer = img.parentElement;
+                             // ensure the parent is position: relative so the absolute overlay aligns correctly
+                             if(window.getComputedStyle(imgContainer).position === 'static') {
+                                 imgContainer.style.position = 'relative';
+                             }
+                        }
+                    }
+                    
+                    if (imgContainer) { 
+                        renderFabOverlay(imgContainer, details, true); 
+                    }
                 }
             });
         };
         document.getElementById('fab_summary_list').innerHTML = '<div style="color:#888; font-size:10px;">Market Mode Active</div>';
         setInterval(scanMarket, 1000);
     } else if (isTradePage) {
-        const scanTrade = () => {
-            GLOBAL_TRADE_NEEDED = {}; GLOBAL_TRADE_OWNED = {}; let fabricatorFound = false;
-            document.querySelectorAll('.item').forEach(item => {
-                let data = item.rgItem; if (!data) return;
+        const scanTrade = async () => {
+            // Check if there are newly added items before triggering a heavy recalculation
+            const hasNewItems = document.querySelectorAll('.item:not([data-fab-trade-done]), .trade_item:not([data-fab-trade-done])').length > 0;
+            
+            if (hasNewItems) {
+                GLOBAL_TRADE_NEEDED = {}; GLOBAL_TRADE_OWNED = {}; 
+            }
+            
+            let fabricatorFound = false;
+            const items = document.querySelectorAll('.item, .trade_item');
+            for (let item of items) {
+                let data = item.rgItem; 
+                
+                // Fetch data for Trade Offers list page where rgItem is missing
+                if (!data && item.classList.contains('trade_item')) {
+                    const economyItem = item.getAttribute('data-economy-item');
+                    if (economyItem) {
+                        const parts = economyItem.split('/');
+                        if (parts.length >= 4) {
+                            const appid = parts[1];
+                            const classid = parts[2];
+                            const instanceid = parts[3];
+                            const cacheKey = `${appid}_${classid}_${instanceid}`;
+                            
+                            if (ITEM_CACHE[cacheKey]) {
+                                data = ITEM_CACHE[cacheKey];
+                            } else {
+                                // We use itemclasshover because itemclassinfo throws 404s for some modified items!
+                                const url = `https://steamcommunity.com/economy/itemclasshover/${appid}/${classid}/${instanceid}?content_only=1&l=english`;
+                                try {
+                                    const res = await fetch(url);
+                                    if (res.ok) {
+                                        const html = await res.text();
+                                        
+                                        // Clean safely without parsing as DOM to prevent severe memory/cpu spikes
+                                        let cleanText = stripHtml(html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<\/p>/gi, '\n'));
+                                        let lines = cleanText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                                        let descriptions = lines.map(l => ({value: l}));
+                                        
+                                        let rawName = "";
+                                        let nameMatch = html.match(/<h1 class="hover_item_name"[^>]*>(.*?)<\/h1>/i) || html.match(/<div class="hover_item_name"[^>]*>(.*?)<\/div>/i);
+                                        if (nameMatch) rawName = stripHtml(nameMatch[1]);
+                                        
+                                        data = { market_hash_name: rawName, descriptions: descriptions };
+                                        ITEM_CACHE[cacheKey] = data;
+                                    } else {
+                                        ITEM_CACHE[cacheKey] = { failed: true };
+                                    }
+                                } catch (e) {
+                                    ITEM_CACHE[cacheKey] = { failed: true };
+                                }
+                                // Small delay between requests to prevent Rate Limit 429
+                                await new Promise(r => setTimeout(r, 250));
+                            }
+                        }
+                    }
+                }
+                
+                if (!data || data.failed) continue;
+                
                 const rawName = data.market_hash_name || "";
-                if (rawName.includes('Fabricator') || rawName.includes('Kit')) {
+                let isFab = rawName.includes('Fabricator') || rawName.includes('Kit');
+                let details = parseItemDetails(data.descriptions);
+                
+                // Fallback detection in case market_hash_name wasn't parsed correctly
+                if (!isFab && (details.sheenCode || details.ksCode || details.ingredients.length > 0)) {
+                    isFab = true;
+                }
+
+                if (isFab) {
                     fabricatorFound = true;
                     if (!item.getAttribute('data-fab-trade-done')) {
-                        let details = parseItemDetails(data.descriptions); item.fabCachedIngredients = details.ingredients;
-                        renderFabOverlay(item, details); item.setAttribute('data-fab-trade-done', 'true');
+                        item.fabCachedIngredients = details.ingredients;
+                        renderFabOverlay(item, details); 
+                        item.setAttribute('data-fab-trade-done', 'true');
                     }
-                    if (item.fabCachedIngredients) { item.fabCachedIngredients.forEach(ing => { GLOBAL_TRADE_NEEDED[ing.name] = (GLOBAL_TRADE_NEEDED[ing.name] || 0) + ing.count; }); }
-                } else { GLOBAL_TRADE_OWNED[rawName] = (GLOBAL_TRADE_OWNED[rawName] || 0) + (parseInt(data.amount) || 1); }
-            });
-            if (!fabricatorFound) { mainContainer.style.display = 'none'; return; }
-            mainContainer.style.display = 'block'; updateTradeSummaryUI();
+                    if (item.fabCachedIngredients) { 
+                        item.fabCachedIngredients.forEach(ing => { 
+                            GLOBAL_TRADE_NEEDED[ing.name] = (GLOBAL_TRADE_NEEDED[ing.name] || 0) + ing.count; 
+                        }); 
+                    }
+                } else { 
+                    GLOBAL_TRADE_OWNED[rawName] = (GLOBAL_TRADE_OWNED[rawName] || 0) + (parseInt(data.amount) || 1); 
+                    item.setAttribute('data-fab-trade-done', 'true');
+                }
+            }
+            
+            // Hide summary box on the trade offers list page so we don't mix up missing parts from 10 different offers!
+            if (!fabricatorFound || isTradeOffersList) { mainContainer.style.display = 'none'; return; }
+            mainContainer.style.display = 'block'; 
+            
+            if (hasNewItems) updateTradeSummaryUI();
         };
-        setInterval(scanTrade, 1000);
+        
+        // Loop using async/await to safely pause during fetch limits
+        const loopTradeScan = async () => {
+            await scanTrade();
+            setTimeout(loopTradeScan, 1000);
+        };
+        loopTradeScan();
+        
     } else {
         const loadInventory = async () => {
             try {
@@ -319,14 +505,18 @@
                     } else { OWNED_PARTS[rawName] = (OWNED_PARTS[rawName] || 0) + 1; }
                 });
                 updateInvSummaryUI();
-                const observer = new MutationObserver(() => {
-                    document.querySelectorAll('.item').forEach(el => {
-                        if (el.getAttribute('data-fab-inv-done') || !el.id) return;
+                
+                // Debounce to prevent rapid DOM querying, and only query elements missing the tracker attribute
+                const processInventoryUI = debounce(() => {
+                    document.querySelectorAll('.item:not([data-fab-inv-done])').forEach(el => {
+                        if (!el.id) return;
                         let parts = el.id.split('_'); if (parts[0].startsWith('item')) parts[0] = parts[0].replace('item', '');
                         if (parts.length < 3) return; let assetId = parts[2];
                         if (INVENTORY_DATA[assetId]) { renderFabOverlay(el, INVENTORY_DATA[assetId]); el.setAttribute('data-fab-inv-done', 'true'); }
                     });
-                });
+                }, 150);
+                
+                const observer = new MutationObserver(processInventoryUI);
                 observer.observe(document.body, { childList: true, subtree: true });
             } catch (e) { console.error(e); }
         };
